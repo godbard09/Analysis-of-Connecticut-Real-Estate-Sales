@@ -1,0 +1,505 @@
+---
+title: "Analysis of Connecticut Real Estate Sales"
+output: 
+  flexdashboard::flex_dashboard:
+    storyboard: true
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(dplyr)
+library(httr)
+library(jsonlite)
+library(readr)
+library(tidyverse)
+library(mosaic)
+library(ggplot2)
+library(lubridate)
+library(formattable)
+library(forecast)
+library(kableExtra)
+library(plotly)
+library(gapminder)
+library(gganimate)
+library(gifski)
+library(png)
+library(ggfortify)
+library(tidyquant)
+library(tidycensus)
+library(ggstatsplot)
+library(scales)
+library(feasts)
+library(tsibble)
+library(readxl)
+library(viridis)
+library(RColorBrewer)
+library(DT)
+
+# API endpoint URL with $limit parameter set to a large number
+url <- "https://data.ct.gov/resource/5mzw-sjtu.json?$limit=1200000"
+
+# Make GET request to the API
+response <- GET(url)
+
+# Check if the request was successful
+if (http_status(response)$category == "Success") {
+  # Parse JSON content
+  data <- fromJSON(content(response, "text"))
+  
+  # Now you can work with the 'data' object which contains the API response
+} else {
+  print("Failed to retrieve data from the API.")
+}
+
+# Convert date format
+data$daterecorded <- as.Date(data$daterecorded)
+
+# Select the columns you are interested in
+selected_columns <- c("listyear", "daterecorded", "town", "address", "assessedvalue", "saleamount", "salesratio", "residentialtype")
+
+# Get only the columns of interest from the data
+data <- data[selected_columns]
+
+data <- data %>%
+  na.omit(`residentialtype`)
+
+# Rename
+data <- rename(data, 
+               "List_Year" = "listyear", 
+               "Sale_Date" = "daterecorded", 
+               "Town" = "town", "Address" = "address", 
+               "Assessed_Value" = "assessedvalue" , 
+               "Sale_Price" = "saleamount", 
+               "Sales_Ratio" = "salesratio", 
+               "Property_Type" = "residentialtype")
+
+# Convert
+data$Sale_Date <- as_date(data$Sale_Date, 
+                          format = "%m/%d/%Y")
+data <- data %>%
+  mutate(Sale_Year = year(Sale_Date))
+
+data$List_Year <- as.numeric(data$List_Year)
+data$Assessed_Value <- as.numeric(data$Assessed_Value)
+data$Sale_Price <- as.numeric(data$Sale_Price)
+
+# Remove all observations prior to 2007
+
+data <- data %>%
+  filter(Sale_Year > 2006)
+
+# Remove top and bottom 2.5% of “Sale_Price”
+data <- data %>%
+  filter(Sale_Price < quantile(data$Sale_Price, .975) & 
+           Sale_Price > quantile(data$Sale_Price, .025)) 
+```
+
+### Overall Mean Sale Price of Connecticut Properties
+
+```{r}
+# Overall Mean Sale Price of Connecticut Properties: 2007-2022
+data %>%
+  group_by(year = lubridate::floor_date(Sale_Date, "year")) %>%
+  summarize(mean_year = mean(Sale_Price)) %>%
+  ggplot(aes(x = year, y = mean_year)) +
+  geom_line(aes()) +
+  geom_smooth() +
+  ggtitle("Overall Mean Sale Price of Connecticut Properties: 2007-2022") +
+  ylab("Sale Price") +
+  xlab("Year") +
+  theme_update()
+```
+
+***
+
+
+
+* Ở đây chúng ta có thể quan sát xu hướng của giá bán trung bình chung của bất động sản ở Connecticut từ năm 2007 đến năm 2022. Đúng như dự đoán, giá trung bình đã giảm mạnh sau cuộc khủng hoảng tài chính năm 2008 và dường như đã chạm đáy và sau đó ổn định vào khoảng năm 2008-2009. Từ năm 2009 đến năm 2019, giá bán trung bình tổng thể dường như không có nhiều thay đổi. Sau đó vào năm 2019, giá trung bình bắt đầu tăng mạnh.
+
+### Total Sales Volume And Total Revenue From Properties Sales
+
+```{r}
+# Group data by year and calculate the total number of properties in each year
+property_count <- data %>%
+  group_by(Sale_Year) %>%
+  summarize(property_count = n())
+
+# Convert the "Sale_Price" column to numeric data type
+data$Sale_Price <- as.numeric(data$Sale_Price)
+
+# Group data by year and calculate the total sale price in each year
+sale_price <- data %>%
+  group_by(Sale_Year) %>%
+  summarize(total_sale_price = sum(Sale_Price, na.rm = TRUE))
+
+# Create the first plot without legendgroup
+plot1 <- plot_ly(property_count, x = ~property_count, y = ~factor(Sale_Year), type = "bar", orientation = 'h',
+                 marker = list(color = "steelblue", opacity = 0.7), name = "Total Sales Volume") %>%
+  layout(xaxis = list(title = "Total Sales Volume"), yaxis = list(title = "Year"),
+         title = "Total Sales Volume from 2007 to 2022",
+         showlegend = TRUE)  # Hide the legend
+
+# Create the second plot without legendgroup
+plot2 <- plot_ly(sale_price, x = ~total_sale_price, y = ~factor(Sale_Year), type = "scatter", mode = "markers",
+                 hovertemplate = paste("Total Revenue: %{x}<br>Year: %{y}"),
+                 marker = list(color = "orange"), name = "Total Revenue") %>%
+  layout(xaxis = list(title = "Total Revenue From Properties Sales", range = c(0, max(sale_price$total_sale_price))), yaxis = list(title = "Year"),
+         title = "Total Sales Volume And Total Revenue From Properties Sales From 2007 - 2022",
+         showlegend = TRUE)  # Hide the legend
+
+# Add text annotations to display value labels with formatted numbers and customized color
+plot2 <- plot2 %>%
+  add_trace(text = format(sale_price$total_sale_price, big.mark = ",", scientific = FALSE),
+            textposition = "right", textfont = list(color = "black"),
+            mode = "text", showlegend = FALSE)
+
+# Customize the plot layout for the second plot to hide y-axis tick labels and grid lines
+plot2 <- plot2 %>%
+  layout(yaxis = list(showticklabels = FALSE),
+         yaxis2 = list(showticklabels = FALSE, overlaying = "y", side = "right"),
+         margin = list(l = 50, r = 50))
+
+# Combine the plots side by side
+combined_plot <- subplot(plot1, plot2, nrows = 1)
+
+# Display the combined plot with legend in the top right corner
+combined_plot
+```
+***
+* Ở đây ta có thể thấy được với biểu đồ thanh ngang thể hiện tổng lượng tài sản được bán và biểu đồ điểm là tổng doanh thu từ việc bán tài sản từng năm từ năm 2007 đến năm 2022. Nhìn chung, tổng số lượng tài sản được bán ra có xu hướng tăng. Đạt đỉnh điểm vào năm 2021 với số lượng bán ra 55.815K cùng với tổng giá trị đạt gần 20B. 
+
+* Đặc biệt, giai đoạn 2008 - 2010, có thể nói đây là giai đoạn đáng nhớ nhất của nền kinh tế toàn cầu khi cả thế giới chứng kiến sự bùng nổ của cuộc khủng hoảng tài chính. Cuộc khủng hoảng được coi là một trong những cuộc đại khủng hoảng trong lịch sử kinh tế thế giới. Khi nhìn vào tổng số lượng tài sản bán ra có thể nhận thấy tại giai đoạn này số lượng được bán ra giảm mạnh so với năm 2007 - năm trước khi cuộc khủng hoảng nổ ra. Ước lượng tổng giá tài sản được bán trong giai đoạn này giảm gần 50% so với năm 2007.
+
+* Giai đoạn 2011 - 2012 được đánh giá là giai đoạn mà nền kinh tế của thế giới gặp rất nhiều thách thức trong quá trình phục hồi hậu khủng hoảng. Có lẽ đó cũng là lý do khiến lượng tài sản được bán ra giảm sâu, thậm chí giảm xuống thấp hơn so với thời điểm khủng hoảng cả về số lượng lẫn trị giá tài sản. 
+
+* Sau 5 năm vật vã với khủng hoảng tài chính, năm 2013 nền kinh tế thế giới dần trở lại với quỹ đạo. Có thể thấy từ 2013 - 2015, giai đoạn này đối với bất động sản đã có sự hồi phục đáng kể khi số lượng tài sản bán ra cũng như tổng giá bán bắt đầu tăng lên và tiến vào quá trình tăng trưởng ổn định ở giai đoạn 2015 - 2019. 
+
+* Hơn thế nữa, có thể thấy giai đoạn 2020 - 2021, đây là khoảng thời gian mà toàn thế giới đối mặt với sự xuất hiện và hoành hành của đại dịch COVID-19. Tuy nhiên, nhìn vào biểu đồ ta thấy được sự tăng trưởng cực mạnh của bất động sản ở Connecticut và năm 2021 cũng trở thành đỉnh của giai đoạn 15 năm này. Sau những chuyển biến phức tạp của đại dịch Covid trong khi phần lớn các ngành, lĩnh vực khác đều bị ảnh hưởng ít nhiều thì ngay thời điểm đó, thị trường bất động sản Hoa Kỳ lại nóng hơn bao giờ hết. Nguyên do là vì để thúc đẩy nền kinh tế trong bối cảnh đại dịch bùng phát Cục dự trữ Liên Bang Hoa Kỳ (Fed) đã cắt giảm lãi suất cho vay thế chấp và sự chuyển hướng sang làm việc từ nhà. Đến năm 2022, sự sôi động của thị trường bất động sản lại bắt đầu chững lại, lượng bán ra giảm mạnh. Nhìn chung, những gì diễn ra trong năm 2022 có thể là hệ quả của của năm 2021 khi lần đầu tiên trong lịch sử, lãi suất thế chấp đã tăng gấp đôi chỉ trong vòng một năm.
+
+### Yearly Mean Sale Price: Property Types
+
+```{r}
+options(scipen = 999) # remove scientific notation
+data %>%
+  group_by(Property_Type, 
+           year = lubridate::floor_date(Sale_Date, "year")) %>%
+  summarize(mean_year_type = mean(Sale_Price)) %>%
+  ggplot(aes(x = year, 
+             y = mean_year_type, 
+             group = Property_Type)) +
+  geom_point((aes(color = Property_Type))) +
+  geom_smooth() +
+  ggtitle("Yearly Mean Sale Price: Property Types") +
+  ylab("Mean Sale Price ($)") +
+  xlab("Year") +
+  theme_linedraw() +
+  facet_wrap(vars(Property_Type)) +
+  guides(color = guide_legend(title = "Property Type"))
+```
+
+***
+
+
+
+* Nhìn chung ta thấy mối tương quan giữa giá trị trung bình giá bán hằng năm và loại tài sản từ năm 2007 đến năm 2022. Ta thấy xét về tổng thể, giá trung bình của các loại tài sản đều có xu hướng tăng dần, tuy có sự biến động nhất định, nhưng năm 2022 giá trung bình tăng hơn so với năm 2007.
+
+* Đối với Condo và Single Family giá bán trung bình hằng năm đều ở mức ổn và đều đặn ít biến động, cho tới giai đoạn năm 2019 bắt đầu tăng nhanh. Điều này phù hợp với sự bùng nổ giá nhà ở trong giai đoạn Covid 19, vì giai đoạn này mọi người có xu hướng học tập và làm việc tại nhà nhiều hơn nên có nhu cầu cao hơn, đồng thời với lãi suất thấp nên mọi người đều có thể vay tiền để mua nhà vì thế nhu cầu tăng rất cao. 
+
+* Do sự ảnh hưởng của cuộc khủng hoảng tài chính năm 2008 nên giá bán trung bình của Three, Four, Two Family giảm mạnh từ khoảng mức 250000\$ xuống chỉ còn gần 150000\$ và duy trì ở mức thấp trong khoảng 5 năm. Và đến năm 2013 khi nền kinh tế dần khôi phục thì mức giá của Two và Three tăng dần, ổn định tăng đều hằng năm và đặc biệt tăng mạnh từ năm 2019. Còn Four Family tuy cũng có sự biến động trong khoảng năm 2015, tuy nhiên sau đó đã tăng dần và ổn định hằng năm. 
+
+### Average Sale Price by Property Type
+
+```{r}
+# Group data by year and calculate the total number of properties in each year
+property_count <- data %>%
+  group_by(Sale_Year) %>%
+  summarize(property_count = n())
+
+# Convert the "Sale_Price" column to numeric data type
+data$Sale_Price <- as.numeric(data$Sale_Price)
+
+# Group data by year and calculate the total sale price in each year
+sale_price <- data %>%
+  group_by(Sale_Year) %>%
+  summarize(total_sale_price = sum(Sale_Price, na.rm = TRUE))
+
+# Create the first plot without legendgroup
+plot1 <- plot_ly(property_count, x = ~property_count, y = ~factor(Sale_Year), type = "bar", orientation = 'h',
+                 marker = list(color = "steelblue", opacity = 0.7), name = "Total Sales Volume") %>%
+  layout(xaxis = list(title = "Total Sales Volume"), yaxis = list(title = "Year"),
+         title = "Total Sales Volume from 2007 to 2022",
+         showlegend = TRUE)  # Hide the legend
+
+# Create the second plot without legendgroup
+plot2 <- plot_ly(sale_price, x = ~total_sale_price, y = ~factor(Sale_Year), type = "scatter", mode = "markers",
+                 hovertemplate = paste("Total Sales Price: %{x}<br>Year: %{y}"),
+                 marker = list(color = "orange"), name = "Total Sales Price") %>%
+  layout(xaxis = list(title = "Total Sales Price", range = c(0, max(sale_price$total_sale_price))), yaxis = list(title = "Year"),
+         title = "Total sales volume and price from 2007 - 2022",
+         showlegend = TRUE)  # Hide the legend
+
+# Calculate average sale price by year and property type
+average_prices <- data %>%
+  group_by(Sale_Year, Property_Type) %>%
+  summarise(Average_Price = mean(Sale_Price))
+
+# Create a line plot
+plot <- ggplot(average_prices, aes(x = Sale_Year, y = Average_Price, color = Property_Type)) +
+  geom_line() +
+  labs(x = "Year", y = "Average Sale Price", title = "Average Sale Price by Property Type") +
+  theme_minimal()
+
+# Convert the ggplot object to a Plotly object
+plotly_plot <- ggplotly(plot)
+
+# Customize layout
+plotly_plot <- layout(plotly_plot,
+                      yaxis = list(title = "Average Sale Price",
+                                   tickformat = ".0s"))
+
+# Display the interactive plot
+plotly_plot
+```
+***
+* Trong giai đoạn từ năm 2010 đến năm 2020, thị trường nhà ở tại Hoa Kỳ đã chứng kiến sự tăng đều về giá bán trung bình của các loại hình bất động sản. Tuy nhiên, trước năm 2010, Hoa Kỳ đã trải qua cuộc khủng hoảng kinh tế vào năm 2008, khiến giá các bất động sản giảm mạnh và trên biểu đồ, có thể thấy sự tụt dốc đáng kể từ năm 2007 đến năm 2010. 
+
+* Sau khủng hoảng, chính phủ và Cục Dự trữ Liên bang Hoa Kỳ (FED) đã áp dụng những chính sách để giải quyết tình hình. Nhờ đó, giá bất động sản đã dần ổn định và tăng trở lại. Đến năm 2020, giá các bất động sản đã phục hồi và đạt mức tương đương với trước cuộc khủng hoảng. 
+
+* Ngoài ra, giá trung bình của bất động sản cũng đã tăng theo thời gian do sự phát triển của thế giới và Hoa Kỳ nói chung. Tuy nhiên, dịch COVID-19 đã ảnh hưởng đến tốc độ tăng giá trung bình trong giai đoạn từ 2019 đến 2021.  
+
+* Single Family có giá bán trung bình cao nhất trong suốt thời gian giai đoạn 2007-2022. Lý do cũng rất dễ hiểu bởi vì đây là loại bất động sản phổ biến nhất tại Hoa Kỳ từ giá cả đến đa dạng số lượng, số lượng mua bán cũng đạt top cao trong các loại. Kéo theo đó là sự phát triển của Two Family, Three Family, Four Family và Condo. Đến hiện tại, Condo có giá bán trung bình thấp nhất trong số các loại hình nhà ở được xem xét nhưng đây là loại bất động sản có ít biến động nhất trong giai đoạn từ 2007-2022. 
+
+### Top 10 Towns by Average Sale Price
+
+```{r}
+# Create data of top 10 towns with the highest total sale_price value
+top_towns <- data %>%
+  group_by(Town) %>%
+  summarize(Average_Sale_Price = mean(Sale_Price)) %>%
+  top_n(10, Average_Sale_Price) %>%
+  arrange(desc(Average_Sale_Price))
+
+# Generate metric data for each cell
+min_value <- min(top_towns$Average_Sale_Price)
+max_value <- max(top_towns$Average_Sale_Price)
+
+top_towns$text <- paste( "<br>", format(top_towns$Average_Sale_Price, big.mark = ","))
+
+# Draw a treemap chart using plotly with data in cells and gradient colors
+treemap_plotly <- plot_ly(
+  labels = top_towns$Town,
+  parents = "",
+  values = top_towns$Average_Sale_Price,
+  type = "treemap",
+  text = top_towns$text,
+  hovertemplate = paste("%{label}<br>Average Sale Price: $%{value:,}<extra></extra>"),
+  textposition = "middle center",
+  marker = list(
+    colorscale = "YlGn",  
+    color = top_towns$Average_Sale_Price,
+    colorbar = list(
+      title = list(text = "")  
+    )
+  )
+) %>% layout(
+  title = list(text = "Top 10 Towns by Average Sale Price", y = 0.9, font = list(size = 20)), 
+  margin = list(t = 100),
+  width = 450,  
+  height = 480  
+)
+
+# Display treemap chart
+treemap_plotly
+```
+***
+* Trong số 10 thị trấn được xem xét, Darien được biết đến với giá bán trung bình cao nhất (\$965,361.5). Các thị trấn còn lại có giá bán trung bình nằm trong khoảng từ \$600,000 đến \$950,000.
+
+* Darien là một thị trấn nhỏ nằm ở phía tây nam Connecticut và được biết đến với các trường học chất lượng cao, khu phố an toàn và phong cảnh đẹp. Không có gì ngạc nhiên khi Darien có giá bán trung bình cao nhất trong số 10 thị trấn được xem xét.
+
+* New Canaan, gần Darien, và có các đặc điểm tương tự như Darien, bao gồm các trường học chất lượng cao và khu phố an toàn. Giá bán trung bình của New Canaan thấp hơn Darien một chút, nhưng vẫn cao hơn đáng kể so với mức trung bình quốc gia.
+
+* Westport là một thị trấn ven biển nằm ở Connecticut, cũng gần Darien và New Canaan. Westport cũng có các trường học chất lượng cao và khu phố an toàn. Tuy nhiên, giá bán trung bình của Westport thấp hơn so với Darien và New Canaan.
+
+* Có một số lý do để giải thích sự khác biệt này. Thứ nhất, Westport có dân số đông hơn Darien và New Canaan, dẫn đến sự cạnh tranh cao hơn và giá thấp hơn. Thứ hai, Westport có diện tích lớn hơn, cung cấp nhiều đất hơn để xây dựng nhà ở mới, dẫn đến nguồn cung dồi dào và giá thấp hơn.
+
+### Scatter Plot of Properties Sold by Top 10 Towns
+
+```{r, include = FALSE}
+# View Counts of Property types
+data %>%
+  count(Property_Type) %>%
+  mutate("Proportion"= percent(n/sum(n))) %>%
+  rename("Property Type" = "Property_Type") %>%
+  rename("Number of Properties Sold" = "n") %>%
+  kbl() %>%
+  kable_material(c("striped","hover"))
+
+# Create aggregated data for town and property types
+data_summary <- data %>%
+  count(Town, Property_Type, name = "Number of Properties Sold")
+```
+
+
+```{r}
+# Take the 10 towns with the most sold properties
+top_10_towns_2 <- data_summary %>%
+  group_by(Town) %>%
+  summarise(Total_Sold = sum(`Number of Properties Sold`)) %>%
+  top_n(10, Total_Sold) %>%
+  arrange(desc(Total_Sold))
+
+# Filter data for top 10 towns
+data_top_10 <- data_summary %>%
+  filter(Town %in% top_10_towns_2$Town)
+
+# Scatter plot with color and size map
+scatter_plot <- ggplot(data_top_10, aes(x = Town, y = `Number of Properties Sold`, color = Property_Type, size = `Number of Properties Sold`)) +
+  geom_point() +
+  labs(title = "Scatter Plot of Properties Sold by Top 10 Towns",
+       x = "Town",
+       y = "Number of Properties Sold") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Display a scatter plot
+print(scatter_plot)
+```
+
+***
+
+
+
+
+* Chúng ta có thể nhận thấy rằng có sự đa dạng về số lượng tài sản đã bán ở các thị trấn khác nhau. Một số thị trấn có số lượng tài sản bán ra nhiều hơn so với các thị trấn khác, trong khi một số thị trấn khác lại có số lượng tài sản bán ra ít hơn. Cụ thể, Stamford là thị trấn có số lượng tài sản đã bán nhiều nhất, với 18709 tổng tài sản đã bán ra, nhiều hơn gấp 1,7 lần so với thị trấn có số lượng tài sản đã bán ít nhất là Hamden chỉ với 11113 tài sản đã bán ra. Nhìn chung có thể thấy “Single Family” và “Condo” là hai loại tài sản được mua nhiều nhất tại top 10 thị trấn ở Connecticut; trong đó “Single Family” ở mỗi thị trấn luôn có số lượng bán ra trên 5000 và tập trung nhiều trong khoảng 7500 – 10000. 
+
+* Biểu đồ cũng cho thấy một số điểm ngoại lai, với một số thị trấn có rất ít tài sản được bán ra so với các thị trấn khác trong bộ dữ liệu. Điều này có thể chỉ ra rằng có một số thị trấn không thu hút được nhiều sự quan tâm từ phía người mua hoặc có thị trường bất động sản đang gặp khó khăn trong khu vực đó. Nguyên nhân có thể do thị trường bất động sản trong khu vực đó không thuận lợi, có ít người mua hoặc không có nhiều nhu cầu mua bất động sản. Ngoài ra, các thị trấn này có thể không có các yếu tố hấp dẫn khác như cơ sở hạ tầng tốt, tiện ích xung quanh hoặc vị trí thuận lợi. Tất cả những yếu tố này có thể ảnh hưởng đến sự quan tâm và mức độ bán hàng của các tài sản bất động sản trong các thị trấn này. 
+
+### Number of Properties Sold (Month) and Average Sale Price
+
+```{r}
+#Number of Properties Sold
+data %>%
+  group_by(month = floor_date(Sale_Date, 
+                              "month"), 
+           Property_Type) %>%
+  summarize(mean_price = mean(Sale_Price), 
+            count = count(month)) %>%
+  ggplot(aes(x = count, 
+             y = mean_price, 
+             color = Property_Type)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Number of Properties Sold (Month) and Average Sale Price",
+          subtitle = "Grouped by Property Type") +
+  xlab("Number of Properties Sold") +
+  ylab("Average Sale Price (Month") +
+  facet_wrap(vars(Property_Type), 
+             scales = "free") +
+  guides(color = "none")
+```
+
+***
+
+
+
+* Ở đây chúng ta đang xem xét mối quan hệ giữa số lượng tài sản được bán và giá bán trung bình. Số lượng bất động sản bán được trong một tháng là biến x và giá bán trung bình của tháng đó là biến y. Biểu đồ trên chứng minh rằng dường như có mối quan hệ tuyến tính tích cực từ yếu đến trung bình giữa số lượng tài sản được bán trong một tháng nhất định và giá bán trung bình. Mối quan hệ này xuất hiện tích cực ở các mức độ khác nhau đối với tất cả các loại tài sản.
+
+### How Volume Impacts Price Movement
+
+```{r}
+# Line graph of mean sale price combined with bar graph of number of properties sold
+
+data %>%
+  group_by(Property_Type, 
+           month = floor_date(Sale_Date, 
+                              "month")) %>%
+  filter(Property_Type == "Single Family") %>%
+  summarize(mean = mean(Sale_Price),
+            properties_sold = count(month)) %>%
+  mutate(previous_mean = lag(mean)) %>%
+  mutate(previous_month = lag(month)) %>%
+  mutate(Direction = ifelse(properties_sold < lag(properties_sold), 
+                            "Decreasing Sales",
+                            "Increasing Sales")) %>%
+  mutate(Direction2 = ifelse(mean < lag(mean), 
+                             "Decreasing Price",
+                             "Increasing Price")) %>%
+  na.omit() %>% ##removes the first observations with no lag
+  ggplot(aes(month, mean, 
+             xend = previous_month,
+             yend = previous_mean)) +
+  geom_segment(aes(color = Direction2)) +
+  scale_color_manual("Direction of Change: Price", 
+                     values = c("Decreasing Price" = "rosybrown", 
+                                "Increasing Price" = "steelblue")) +
+  geom_col(aes(x = month, 
+               y = properties_sold*50, 
+               fill = Direction)) +
+  scale_fill_manual("Direction of Change: Volume", 
+                    values = c("Decreasing Sales" = "rosybrown", 
+                               "Increasing Sales" = "steelblue")) +
+  ggtitle("How Volume Impacts Price Movement") +
+  xlab("Time Grouped by Month") +
+  scale_y_continuous(name = "Average Sale Price ($)", 
+                     sec.axis = sec_axis(~./50, 
+                                         name = "Number of Properties Sold"))
+```
+
+***
+
+
+
+* Biểu đồ “How Volume Impacts Price Movement” cho thấy mối quan hệ được biểu thị khác nhau bằng các dạng biểu đồ tiêu biểu: Biểu đồ đường thể hiện giá bán trung bình, biểu đồ cột thể hiện số lượng tài sản được bán. Bên cạnh đó màu sắc xanh - đỏ được dùng làm đại diện các hướng thay đổi (tăng - giảm). Các cột xanh biểu thị khi giá trị trong tháng cao hơn giá trị tháng trước, cột đỏ là khi giá trị thấp hơn giá trị tháng trước đó. Tương tự vậy, các đường xanh biểu thị giá trung bình cao hơn giá trung bình trước đó, đường đỏ biểu thị khi giá trung bình thấp hơn giá trung bình trước đó. Dữ liệu được quy về 1 tháng trong năm. Đồng thời chọn Property Type là Single Family vì khi nhìn vào dữ liệu ở biểu đồ cột có thể thấy số lượng tài sản được bán khá cao. Từ đó, xu hướng mà người dân ưa chuộng loại hình tài sản Single Family nên chọn mua loại hình này nhiều hơn. Được biết, phần lớn người dân chọn loại hình nhà này vì đáp ứng được hầu hết các nhu cầu người sử dụng hơn các loại nhà khác như Condo hay Two Family,... Single Family mang tính chất là một loại bất động sản mang tính riêng tư với diện tích lớn. Đây có lẽ là lý do khiến số lượng giao dịch loại tài sản này cao vượt trội so với những loại khác và có giá bán ra cao hơn. 
+
+* Thêm vào đó, nhìn vào hướng thay đổi của biểu đồ đường và biểu đồ cột có thể thấy sự tương quan giữa số lượng tài sản được bán ra và giá bán trung bình. Khối lượng giao dịch có xu hướng thay đổi cùng chiều với giá bán trung bình. Khi số lượng tài sản bán ra tăng, giá bán cũng có xu hướng tăng. Điều này cho thấy khi có nhiều người muốn mua bất động sản, họ sẽ sẵn sàng trả giá cao hơn để sở hữu tài sản đó. Ngược lại, khi số lượng bất động sản được bán giảm, giá bán cũng có xu hướng giảm. Điều này là do khi có ít người muốn mua bất động sản, người bán sẽ phải hạ giá để thu hút người mua. 
+
+### The Relationship Between Mean Sale Price And Number Of Properties Sold
+
+```{r}
+# Looking at the relationship between mean sale price and number of properties sold statistically
+options(scipen = 999) # remove scientific notation
+
+data %>%
+  group_by(month = floor_date(Sale_Date, "month"), 
+           Property_Type) %>%
+  filter(Property_Type == "Single Family") %>%
+  summarize(mean_price = mean(Sale_Price), 
+            count = count(month), 
+            na.rm = TRUE) %>%
+  ggscatterstats(x = count, 
+                 y = mean_price) +
+  ggtitle("Relationship Between Count and Sale Price") +
+  xlab("Number of Properties Sold") +
+  ylab("Average Price ($)") +
+  theme(axis.text.x = element_text(angle = 30, 
+                                   hjust = 1)) 
+```
+
+***
+
+
+
+* Ở đây chúng ta thấy mối quan hệ được hiển thị bằng số dưới dạng hệ số tương quan. Hệ số tương quan quan sát được là 0,54 (theo thang từ -1 đến 1). Giá trị p (sấp xỉ bằng 0), cho thấy không có một mẫu rõ ràng hoặc không có mối quan hệ đơn điệu giữa giá cả và số lượng tài sản được bán.
+
+### Linear Model of The Relationship Between Mean Price And Number of Properties Sold
+
+```{r}
+# Linear model of the relationship between mean price and number of properties sold
+lm1 <- data %>%
+  group_by(month = floor_date(Sale_Date, 
+                              "month"), 
+           Property_Type) %>%
+  filter(Property_Type == "Single Family") %>%
+  summarize(mean_price = mean(Sale_Price), 
+            count = count(month))
+
+lm2 <-lm(mean_price ~ count, data = lm1)
+
+summary(lm2)
+```
+***
+* Nhìn vào các giá trị p từ F-statistic và T-test (cả hai đều xấp xỉ 0), chúng ta có thể thấy rằng độ dốc có ý nghĩa và mô hình tốt.
+
+* Tuy nhiên, nhìn vào hệ số xác định (R-squared), chúng ta có thể thấy mô hình đó không đặc biệt phù hợp. Hệ số xác định là 0,291 (theo thang điểm từ 0 đến 1). Hệ số xác định cho chúng ta biết tỷ lệ biến thiên của biến phản ứng được giải thích bởi biến giải thích. Để một mô hình được cho là phù hợp, R2 thường từ 0,75-0,80. Điều này cho thấy có mức độ biến động cao xung quanh đường hồi quy mặc dù xu hướng chung có ý nghĩa thống kê.
+
+* Từ đó có thể kết luận rằng số lượng bất động sản được bán có ảnh hưởng đến giá nhưng không quyết định giá (có những yếu tố khác liên quan).
+
